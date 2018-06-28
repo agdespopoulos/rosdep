@@ -35,6 +35,7 @@ Command-line interface to rosdep library
 from __future__ import print_function
 
 import os
+import re
 import sys
 import traceback
 try:
@@ -117,6 +118,11 @@ rosdep fix-permissions
   Recursively change the permissions of the user's ros home directory.
   May require sudo.  Can be useful to fix permissions after calling
   "rosdep update" with sudo accidentally.
+
+rosdep search {rosdep|package|both} <search-text>
+  searchs the rosdep database and prints any packages. rosdep will
+  only search rosdep rule names, package will only search resolved
+  package names, and both will search both. search-text may be regex
 """
 
 
@@ -872,6 +878,65 @@ def command_fix_permissions(options):
             print('Done.')
 
 
+def command_search(args, options):
+    lookup = _get_default_RosdepLookup(options)
+    installer_context = create_default_installer_context(verbose=options.verbose)
+    configure_installer_context(installer_context, options)
+
+    installer, installer_keys, default_key, \
+        os_name, os_version = get_default_installer(installer_context=installer_context,
+                                                    verbose=options.verbose)
+
+    view = lookup.get_rosdep_view(DEFAULT_VIEW_KEY, verbose=options.verbose)
+
+    if len(args) < 2:
+        print('ERROR: too few arguments')
+        return 1
+    sub_cmd = args[0]
+    search_text = ' '.join(args[1:])
+    regex = re.compile(search_text)
+
+    def resolve(rosdep_name):
+        d = view.lookup(rosdep_name)
+        inst_key, rule = d.get_rule_for_platform(os_name, os_version, installer_keys, default_key)
+        if options.filter_for_installers and inst_key not in options.filter_for_installers:
+            return None
+        resolved = installer.resolve(rule)
+        return ' '.join([str(r) for r in resolved])
+
+    def rosdep_search():
+        for match in (key for key in view.keys() if regex.search(key)):
+            yield match, resolve(match)
+
+    def package_search():
+        all_resolved = []
+        for rosdep_name in view.keys():
+            try:
+                all_resolved.append((rosdep_name, resolve(rosdep_name)))
+            except:
+                pass
+        for match in (r for r in all_resolved if regex.search(r[1])):
+            yield match
+
+    def print_result(rosdep, resolved):
+        print('{} -> {}'.format(rosdep, resolved))
+
+    if sub_cmd == 'rosdep':
+        for result in rosdep_search():
+            print_result(result[0], result[1])
+    elif sub_cmd == 'package':
+        for result in package_search():
+            print_result(result[0], result[1])
+    elif sub_cmd == 'both':
+        rosdep_results = set(rosdep_search())
+        package_results = set(package_search())
+        for result in rosdep_results | package_results:
+            print_result(result[0], result[1])
+    else:
+        print('ERROR: invalid subcommand "{}"'.format(sub_cmd))
+        return 1
+
+
 command_handlers = {
     'db': command_db,
     'check': command_check,
@@ -883,6 +948,7 @@ command_handlers = {
     'init': command_init,
     'update': command_update,
     'fix-permissions': command_fix_permissions,
+    'search': command_search,
 
     # backwards compat
     'what_needs': command_what_needs,
@@ -891,7 +957,7 @@ command_handlers = {
 }
 
 # commands that accept rosdep names as args
-_command_rosdep_args = ['what-needs', 'what_needs', 'where-defined', 'where_defined', 'resolve']
+_command_rosdep_args = ['what-needs', 'what_needs', 'where-defined', 'where_defined', 'resolve', 'search']
 # commands that take no args
 _command_no_args = ['update', 'init', 'db', 'fix-permissions']
 
